@@ -1,5 +1,6 @@
 package io.github.takusan23.mediacodecopenglhdr
 
+import android.media.MediaRecorder
 import android.net.Uri
 import android.opengl.EGL14
 import android.opengl.EGLConfig
@@ -30,18 +31,19 @@ import androidx.graphics.opengl.egl.EGLConfigAttributes
 import androidx.graphics.opengl.egl.EGLManager
 import androidx.graphics.opengl.egl.EGLSpec
 import io.github.takusan23.mediacodecopenglhdr.akaricore.AkariVideoFrameTexture
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
-import kotlinx.coroutines.newSingleThreadContext
+import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
+private const val MEDIA_RECORDER_WIDTH = 1920
+private const val MEDIA_RECORDER_HEIGHT = 1080
+
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val glThread = remember { newSingleThreadContext("GlThread") }
 
     val videoUri = remember { mutableStateOf<Uri?>(null) }
     val surfaceView = remember { SurfaceView(context) }
@@ -59,6 +61,20 @@ fun MainScreen() {
         var uniformLocation: GLUtil.UniformLocation? = null
         var previewSurfaceGlRenderer: GLRenderer.RenderTarget? = null
 
+        val mediaRecorder = MediaRecorder(context).apply {
+            // 呼び出し順が存在します
+            // 音声トラックは録画終了時にやります
+            setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            setVideoEncoder(MediaRecorder.VideoEncoder.HEVC)
+            setVideoEncodingBitRate(10_000_000)
+            setVideoFrameRate(30)
+            setVideoSize(MEDIA_RECORDER_WIDTH, MEDIA_RECORDER_HEIGHT)
+            val videoRecordingFile = context.getExternalFilesDir(null)?.resolve("10bit_hdr_video_opengl_mediarecorder_${System.currentTimeMillis()}.mp4")
+            setOutputFile(videoRecordingFile!!.path)
+            prepare()
+        }
+
         val glRenderer = GLRenderer(
             eglSpecFactory = { EGLSpec.V14ES3 },
             eglConfigFactory = {
@@ -67,7 +83,7 @@ fun MainScreen() {
                         include(EGLConfigAttributes.RGBA_1010102)
                         EGL14.EGL_RENDERABLE_TYPE to EGLExt.EGL_OPENGL_ES3_BIT_KHR
                         EGL14.EGL_SURFACE_TYPE to (EGL14.EGL_WINDOW_BIT or EGL14.EGL_PBUFFER_BIT)
-                        // EGLExt.EGL_RECORDABLE_ANDROID to 1 // MediaCodec に必要
+                        // EGLExt.EGL_RECORDABLE_ANDROID to 1 // MediaCodec に必要→いらんかも
                     }
                 )!!
             }
@@ -107,19 +123,28 @@ fun MainScreen() {
         })
 
         glRenderer.start()
+        mediaRecorder.start()
 
-        previewSurfaceGlRenderer = glRenderer.attach(surfaceView, object : GLRenderer.RenderCallback {
+        // 3 秒後に終える
+        scope.launch {
+            delay(5_000)
+            mediaRecorder.stop()
+            mediaRecorder.release()
+            scope.cancel()
+            println("Complete!!!")
+        }
+
+        previewSurfaceGlRenderer = glRenderer.attach(mediaRecorder.surface, MEDIA_RECORDER_WIDTH, MEDIA_RECORDER_HEIGHT, object : GLRenderer.RenderCallback {
             override fun onDrawFrame(eglManager: EGLManager) {
                 val akariSurfaceTexture = akariVideoFrameTexture?.akariSurfaceTexture
                 if (akariSurfaceTexture != null) {
                     // テクスチャ更新
                     akariSurfaceTexture.checkAndUpdateTexImage()
                     akariSurfaceTexture.getTransformMatrix(mSTMatrix)
-
                     // OpenGL 描画
                     GLUtil.drawFrame(
-                        outputWidth = surfaceView.width,
-                        outputHeight = surfaceView.height,
+                        outputWidth = MEDIA_RECORDER_WIDTH,
+                        outputHeight = MEDIA_RECORDER_HEIGHT,
                         texMatrixLoc = uniformLocation!!.texMatrixLoc,
                         surfaceTransform = mSTMatrix
                     )
@@ -139,6 +164,38 @@ fun MainScreen() {
                 )
             }
         })
+
+//        previewSurfaceGlRenderer = glRenderer.attach(surfaceView, object : GLRenderer.RenderCallback {
+//            override fun onDrawFrame(eglManager: EGLManager) {
+//                val akariSurfaceTexture = akariVideoFrameTexture?.akariSurfaceTexture
+//                if (akariSurfaceTexture != null) {
+//                    // テクスチャ更新
+//                    akariSurfaceTexture.checkAndUpdateTexImage()
+//                    akariSurfaceTexture.getTransformMatrix(mSTMatrix)
+//
+//                    // OpenGL 描画
+//                    GLUtil.drawFrame(
+//                        outputWidth = surfaceView.width,
+//                        outputHeight = surfaceView.height,
+//                        texMatrixLoc = uniformLocation!!.texMatrixLoc,
+//                        surfaceTransform = mSTMatrix
+//                    )
+//                }
+//            }
+//
+//            override fun onSurfaceCreated(spec: EGLSpec, config: EGLConfig, surface: Surface, width: Int, height: Int): EGLSurface? {
+//                return spec.eglCreateWindowSurface(
+//                    config = config,
+//                    surface = surface,
+//                    // これで OpenGLES + SurfaceView で画面が HDR 表示になる
+//                    configAttributes = EGLConfigAttributes {
+//                        if (/*use10bitPipeline*/ true) {
+//                            GLUtil.EGL_GL_COLORSPACE_KHR to GLUtil.EGL_GL_COLORSPACE_BT2020_HLG_EXT
+//                        }
+//                    }
+//                )
+//            }
+//        })
     }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->

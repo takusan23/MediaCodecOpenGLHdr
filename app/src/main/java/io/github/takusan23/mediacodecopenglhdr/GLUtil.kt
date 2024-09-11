@@ -374,9 +374,37 @@ object GLUtil {
           );
           return clamp(yuvToRgbColorTransform * (yuv - yuvOffset), 0.0, 1.0);
         }
+
+        // special thanks !
+        // https://www.shadertoy.com/view/lt3fzN
+        lowp vec4 blur(in highp vec2 resolution)
+        {
+            highp vec2 r = 1.0 / resolution;
+            
+            const lowp float off = 5.0;
+            const lowp float v = off * 2.0 + 1.0;
+            const lowp float d = 1.0 / (v * v);
+        
+            lowp vec4 color = vec4(0.0);
+            for (float x = -off; x <= off; x++)
+            {
+                for (float y = -off; y <= off; y++)
+                {
+                    highp vec2 coord = vec2($VAR_TEXTURE_COORD.x + x * r.x, $VAR_TEXTURE_COORD.y + y * r.y);
+                    color += texture($VAR_TEXTURE, coord) * d;
+                }
+            }
+                
+            return color;
+        }
         
         void main() {
-          outColor = yuvToRgb(texture($VAR_TEXTURE, $VAR_TEXTURE_COORD).xyz);
+            vec2 u_size = vec2(1920,1080);
+
+            lowp vec4 col = blur(u_size.xy);
+            outColor = yuvToRgb(col.xyz);
+            
+            // outColor = yuvToRgb(texture($VAR_TEXTURE, $VAR_TEXTURE_COORD).xyz);
         }
             """.trimIndent()
 
