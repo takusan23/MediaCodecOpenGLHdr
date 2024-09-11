@@ -379,7 +379,7 @@ object GLUtil {
         // https://www.shadertoy.com/view/lt3fzN
         lowp vec4 blur(in highp vec2 resolution)
         {
-            highp vec2 r = 1.0 / resolution;
+            highp vec2 r = 3.0 / resolution;
             
             const lowp float off = 5.0;
             const lowp float v = off * 2.0 + 1.0;

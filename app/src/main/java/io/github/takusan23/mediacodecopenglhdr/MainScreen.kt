@@ -12,17 +12,20 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -45,6 +48,7 @@ fun MainScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    val isRecordMode = remember { mutableStateOf(false) }
     val videoUri = remember { mutableStateOf<Uri?>(null) }
     val surfaceView = remember { SurfaceView(context) }
 
@@ -60,20 +64,6 @@ fun MainScreen() {
         var akariVideoFrameTexture: AkariVideoFrameTexture? = null
         var uniformLocation: GLUtil.UniformLocation? = null
         var previewSurfaceGlRenderer: GLRenderer.RenderTarget? = null
-
-        val mediaRecorder = MediaRecorder(context).apply {
-            // 呼び出し順が存在します
-            // 音声トラックは録画終了時にやります
-            setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setVideoEncoder(MediaRecorder.VideoEncoder.HEVC)
-            setVideoEncodingBitRate(10_000_000)
-            setVideoFrameRate(30)
-            setVideoSize(MEDIA_RECORDER_WIDTH, MEDIA_RECORDER_HEIGHT)
-            val videoRecordingFile = context.getExternalFilesDir(null)?.resolve("10bit_hdr_video_opengl_mediarecorder_${System.currentTimeMillis()}.mp4")
-            setOutputFile(videoRecordingFile!!.path)
-            prepare()
-        }
 
         val glRenderer = GLRenderer(
             eglSpecFactory = { EGLSpec.V14ES3 },
@@ -123,79 +113,96 @@ fun MainScreen() {
         })
 
         glRenderer.start()
-        mediaRecorder.start()
 
-        // 3 秒後に終える
-        scope.launch {
-            delay(5_000)
-            mediaRecorder.stop()
-            mediaRecorder.release()
-            scope.cancel()
-            println("Complete!!!")
-        }
+        previewSurfaceGlRenderer = if (isRecordMode.value) {
 
-        previewSurfaceGlRenderer = glRenderer.attach(mediaRecorder.surface, MEDIA_RECORDER_WIDTH, MEDIA_RECORDER_HEIGHT, object : GLRenderer.RenderCallback {
-            override fun onDrawFrame(eglManager: EGLManager) {
-                val akariSurfaceTexture = akariVideoFrameTexture?.akariSurfaceTexture
-                if (akariSurfaceTexture != null) {
-                    // テクスチャ更新
-                    akariSurfaceTexture.checkAndUpdateTexImage()
-                    akariSurfaceTexture.getTransformMatrix(mSTMatrix)
-                    // OpenGL 描画
-                    GLUtil.drawFrame(
-                        outputWidth = MEDIA_RECORDER_WIDTH,
-                        outputHeight = MEDIA_RECORDER_HEIGHT,
-                        texMatrixLoc = uniformLocation!!.texMatrixLoc,
-                        surfaceTransform = mSTMatrix
+            // 呼び出し順が存在します
+            val mediaRecorder = MediaRecorder(context).apply {
+                setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setVideoEncoder(MediaRecorder.VideoEncoder.HEVC)
+                setVideoEncodingBitRate(10_000_000)
+                setVideoFrameRate(30)
+                setVideoSize(MEDIA_RECORDER_WIDTH, MEDIA_RECORDER_HEIGHT)
+                val videoRecordingFile = context.getExternalFilesDir(null)?.resolve("10bit_hdr_video_opengl_mediarecorder_${System.currentTimeMillis()}.mp4")
+                setOutputFile(videoRecordingFile!!.path)
+                prepare()
+            }
+
+            // 3 秒後に終える
+            scope.launch {
+                mediaRecorder.start()
+                delay(5_000)
+                mediaRecorder.stop()
+                mediaRecorder.release()
+                scope.cancel()
+                println("Complete!!!")
+            }
+
+            glRenderer.attach(mediaRecorder.surface, MEDIA_RECORDER_WIDTH, MEDIA_RECORDER_HEIGHT, object : GLRenderer.RenderCallback {
+                override fun onDrawFrame(eglManager: EGLManager) {
+                    val akariSurfaceTexture = akariVideoFrameTexture?.akariSurfaceTexture
+                    if (akariSurfaceTexture != null) {
+                        // テクスチャ更新
+                        akariSurfaceTexture.checkAndUpdateTexImage()
+                        akariSurfaceTexture.getTransformMatrix(mSTMatrix)
+                        // OpenGL 描画
+                        GLUtil.drawFrame(
+                            outputWidth = MEDIA_RECORDER_WIDTH,
+                            outputHeight = MEDIA_RECORDER_HEIGHT,
+                            texMatrixLoc = uniformLocation!!.texMatrixLoc,
+                            surfaceTransform = mSTMatrix
+                        )
+                    }
+                }
+
+                override fun onSurfaceCreated(spec: EGLSpec, config: EGLConfig, surface: Surface, width: Int, height: Int): EGLSurface? {
+                    return spec.eglCreateWindowSurface(
+                        config = config,
+                        surface = surface,
+                        // これで OpenGLES + SurfaceView で画面が HDR 表示になる
+                        configAttributes = EGLConfigAttributes {
+                            if (/*use10bitPipeline*/ true) {
+                                GLUtil.EGL_GL_COLORSPACE_KHR to GLUtil.EGL_GL_COLORSPACE_BT2020_HLG_EXT
+                            }
+                        }
                     )
                 }
-            }
+            })
+        } else {
+            glRenderer.attach(surfaceView, object : GLRenderer.RenderCallback {
+                override fun onDrawFrame(eglManager: EGLManager) {
+                    val akariSurfaceTexture = akariVideoFrameTexture?.akariSurfaceTexture
+                    if (akariSurfaceTexture != null) {
+                        // テクスチャ更新
+                        akariSurfaceTexture.checkAndUpdateTexImage()
+                        akariSurfaceTexture.getTransformMatrix(mSTMatrix)
 
-            override fun onSurfaceCreated(spec: EGLSpec, config: EGLConfig, surface: Surface, width: Int, height: Int): EGLSurface? {
-                return spec.eglCreateWindowSurface(
-                    config = config,
-                    surface = surface,
-                    // これで OpenGLES + SurfaceView で画面が HDR 表示になる
-                    configAttributes = EGLConfigAttributes {
-                        if (/*use10bitPipeline*/ true) {
-                            GLUtil.EGL_GL_COLORSPACE_KHR to GLUtil.EGL_GL_COLORSPACE_BT2020_HLG_EXT
-                        }
+                        // OpenGL 描画
+                        GLUtil.drawFrame(
+                            outputWidth = surfaceView.width,
+                            outputHeight = surfaceView.height,
+                            texMatrixLoc = uniformLocation!!.texMatrixLoc,
+                            surfaceTransform = mSTMatrix
+                        )
                     }
-                )
-            }
-        })
+                }
 
-//        previewSurfaceGlRenderer = glRenderer.attach(surfaceView, object : GLRenderer.RenderCallback {
-//            override fun onDrawFrame(eglManager: EGLManager) {
-//                val akariSurfaceTexture = akariVideoFrameTexture?.akariSurfaceTexture
-//                if (akariSurfaceTexture != null) {
-//                    // テクスチャ更新
-//                    akariSurfaceTexture.checkAndUpdateTexImage()
-//                    akariSurfaceTexture.getTransformMatrix(mSTMatrix)
-//
-//                    // OpenGL 描画
-//                    GLUtil.drawFrame(
-//                        outputWidth = surfaceView.width,
-//                        outputHeight = surfaceView.height,
-//                        texMatrixLoc = uniformLocation!!.texMatrixLoc,
-//                        surfaceTransform = mSTMatrix
-//                    )
-//                }
-//            }
-//
-//            override fun onSurfaceCreated(spec: EGLSpec, config: EGLConfig, surface: Surface, width: Int, height: Int): EGLSurface? {
-//                return spec.eglCreateWindowSurface(
-//                    config = config,
-//                    surface = surface,
-//                    // これで OpenGLES + SurfaceView で画面が HDR 表示になる
-//                    configAttributes = EGLConfigAttributes {
-//                        if (/*use10bitPipeline*/ true) {
-//                            GLUtil.EGL_GL_COLORSPACE_KHR to GLUtil.EGL_GL_COLORSPACE_BT2020_HLG_EXT
-//                        }
-//                    }
-//                )
-//            }
-//        })
+                override fun onSurfaceCreated(spec: EGLSpec, config: EGLConfig, surface: Surface, width: Int, height: Int): EGLSurface? {
+                    return spec.eglCreateWindowSurface(
+                        config = config,
+                        surface = surface,
+                        // これで OpenGLES + SurfaceView で画面が HDR 表示になる
+                        configAttributes = EGLConfigAttributes {
+                            if (/*use10bitPipeline*/ true) {
+                                GLUtil.EGL_GL_COLORSPACE_KHR to GLUtil.EGL_GL_COLORSPACE_BT2020_HLG_EXT
+                            }
+                        }
+                    )
+                }
+            })
+        }
+
     }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -207,6 +214,11 @@ fun MainScreen() {
 
             Button(onClick = { start() }) {
                 Text(text = "実行")
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = "ON = MediaRecorder / OFF = SurfaceView")
+                Switch(checked = isRecordMode.value, onCheckedChange = { isRecordMode.value = it })
             }
 
             AndroidView(
